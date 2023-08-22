@@ -44,7 +44,7 @@ afterEvaluate {
             release(MavenPublication) {
                 groupId = 'help5g'
                 artifactId = 'UddoktaPaySDK'
-                version = 'ultra.1.0'
+                version = 'ultra.2.0'
                 artifact(bundleReleaseAar)
             }
         }

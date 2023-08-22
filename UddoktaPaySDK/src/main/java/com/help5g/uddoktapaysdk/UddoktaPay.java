@@ -40,7 +40,8 @@ public class UddoktaPay {
     public interface PaymentCallback {
         void onPaymentStatus(String status, String fullName, String email, String amount, String invoiceId,
                              String paymentMethod, String senderNumber, String transactionId,
-                             String date, Map<String, String> metadataValues);
+                             String date, Map<String, String> metadataValues,
+                             String chargeAmount, String fee);
     }
 
 
@@ -66,46 +67,78 @@ public class UddoktaPay {
                                 String redirectUrl, String cancelUrl,
                                 Map<String, String> metadataMap) {
 
-        StringBuilder metadataInputs = new StringBuilder();
-        for (Map.Entry<String, String> entry : metadataMap.entrySet()) {
-            metadataInputs.append("<input type=\"hidden\" name=\"metadata[")
-                    .append(entry.getKey())
-                    .append("]\" value=\"")
-                    .append(entry.getValue())
-                    .append("\">\n");
+        JSONObject requestBodyJson = new JSONObject();
+        try {
+            requestBodyJson.put("full_name", fullName);
+            requestBodyJson.put("email", email);
+            requestBodyJson.put("amount", amount);
+            requestBodyJson.put("redirect_url", redirectUrl);
+            requestBodyJson.put("return_type", "get");
+            requestBodyJson.put("cancel_url", cancelUrl);
+            JSONObject metadataObject = new JSONObject(metadataMap);
+            requestBodyJson.put("metadata", metadataObject);
+        } catch (JSONException e) {
+            e.printStackTrace();
+            return;
         }
-        // Construct the HTML content for the payment form
-        String html = "<!DOCTYPE html>\n" +
-                "<html lang=\"en\">\n" +
-                "<head>\n" +
-                "    <meta charset=\"UTF-8\">\n" +
-                "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" +
-                "    <title>Demo UddoktaPaySDK</title>\n" +
-                "</head>\n" +
-                "<body>\n" +
-                "    <form id=\"paymentForm\" action=\"" + checkoutUrl + "\" method=\"post\">\n" +
-                "        <input type=\"hidden\" name=\"api_key\" value=\"" + apiKey + "\">\n" +
-                "        <input type=\"hidden\" name=\"full_name\" value=\"" + fullName + "\">\n" +
-                "        <input type=\"hidden\" name=\"email\" value=\"" + email + "\">\n" +
-                "        <input type=\"hidden\" name=\"redirect_url\" value=\"" + redirectUrl + "\">\n" +
-                "        <input type=\"hidden\" name=\"return_type\" value=\"get\">\n" +
-                "        <input type=\"hidden\" name=\"cancel_url\" value=\"" + cancelUrl + "\">\n" +
-                "        <input type=\"hidden\" name=\"amount\" value=\"" + amount + "\">\n" +
-                metadataInputs.toString() +
-                "    </form>\n" +
-                "    <script>\n" +
-                "        document.getElementById('paymentForm').submit();\n" +
-                "    </script>\n" +
-                "</body>\n" +
-                "</html>";
-        // Load the HTML content in the WebView
-        webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
-        showProcessDialog(); // Show processing dialog when page starts loading
+
+        MediaType JSON = MediaType.parse("application/json; charset=utf-8");
+        RequestBody requestBody = RequestBody.create(requestBodyJson.toString(), JSON);
+
+        Request request = new Request.Builder()
+                .url(checkoutUrl)
+                .post(requestBody)
+                .addHeader("accept", "application/json")
+                .addHeader("RT-UDDOKTAPAY-API-KEY", apiKey)
+                .addHeader("content-type", "application/json")
+                .build();
+
+        OkHttpClient client = new OkHttpClient();
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                e.printStackTrace();
+                showToast(webView.getContext(), "Request failed");
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) throws IOException {
+                if (response.isSuccessful()) {
+                    String responseBody = response.body().string();
+                    try {
+                        JSONObject jsonObject = new JSONObject(responseBody);
+                        boolean status = jsonObject.optBoolean("status");
+
+                        if (status) {
+                            String paymentUrl = jsonObject.optString("payment_url");
+                            if (!paymentUrl.isEmpty()) {
+                                new Handler(Looper.getMainLooper()).post(() -> {
+                                    // Load the payment URL in the WebView
+                                    webView.loadUrl(paymentUrl);
+                                });
+                            } else {
+                                showToast(webView.getContext(), "Payment URL is empty");
+                            }
+                        } else {
+                            String message = jsonObject.optString("message");
+                            showToast(webView.getContext(), message != null ? message : "Payment initiation failed");
+                        }
+                    } catch (JSONException e) {
+                        e.printStackTrace();
+                        showToast(webView.getContext(), "Error parsing JSON response");
+                    }
+                } else {
+                    showToast(webView.getContext(), "Request failed");
+                }
+            }
+        });
+
+        showProcessDialog();
         SapiKey = apiKey;
         SverifyPaymentUrl = verifyPaymentUrl;
         Sredirect = redirectUrl;
-
     }
+
 
     private void showProcessDialog() {
         // Create and show a ProgressDialog with a processing message
@@ -138,6 +171,7 @@ public class UddoktaPay {
         }
     }
 
+
     private void verifyPayment(Context context, String apiKey, String verifyUrl, String invoiceId) {
         OkHttpClient client = new OkHttpClient();
 
@@ -163,7 +197,8 @@ public class UddoktaPay {
                 showToast(context, "Verification request failed");
                 if (paymentCallback != null) {
                     paymentCallback.onPaymentStatus("ERROR", null, null, null,
-                            null, null, null, null, null, null);
+                            null, null, null, null, null, null,
+                            null, null); // Add chargeAmount and fee parameters
                 }
             }
 
@@ -184,10 +219,12 @@ public class UddoktaPay {
                             String senderNumber = jsonObject.optString("sender_number");
                             String transactionId = jsonObject.optString("transaction_id");
                             String date = jsonObject.optString("date");
+                            String fee = jsonObject.optString("fee");
+                            String chargedAmount = jsonObject.optString("charged_amount");
                             showToast(context, "Payment completed");
                             if (paymentCallback != null) {
                                 paymentCallback.onPaymentStatus(status, fullName, email, amount,
-                                        invoiceId, paymentMethod, senderNumber, transactionId, date, metadataValues);
+                                        invoiceId, paymentMethod, senderNumber, transactionId, date, metadataValues,fee,chargedAmount);
                             }
                             Log.d("UddoktaPayDebug", "Extracted Metadata: " + metadataValues.toString());
                         } else if ("PENDING".equals(status)) {
@@ -199,17 +236,19 @@ public class UddoktaPay {
                             String senderNumber = jsonObject.optString("sender_number");
                             String transactionId = jsonObject.optString("transaction_id");
                             String date = jsonObject.optString("date");
+                            String fee = jsonObject.optString("fee");
+                            String chargeAmount = jsonObject.optString("charged_amount");
                             showToast(context, "Payment pending");
                             if (paymentCallback != null) {
                                 paymentCallback.onPaymentStatus(status, fullName, email, amount,
-                                        invoiceId, paymentMethod, senderNumber, transactionId, date, metadataValues);
+                                        invoiceId, paymentMethod, senderNumber, transactionId, date, metadataValues,fee,chargeAmount);
                             }
                             Log.d("UddoktaPayDebug", "Extracted Metadata: " + metadataValues.toString());
                         } else if ("ERROR".equals(status)) {
                             showToast(context, "Payment error");
                             if (paymentCallback != null) {
                                 paymentCallback.onPaymentStatus("ERROR", null, null, null,
-                                        null, null, null, null, null, null);
+                                        null, null, null, null, null, null,null, null);
                             }
                         }
                     } catch (JSONException e) {
@@ -217,14 +256,14 @@ public class UddoktaPay {
                         showToast(context, "Error parsing JSON response");
                         if (paymentCallback != null) {
                             paymentCallback.onPaymentStatus("ERROR", null, null, null,
-                                    null, null, null, null, null, null);
+                                    null, null, null, null, null, null,null, null);
                         }
                     }
                 } else {
                     showToast(context, "Verification request failed");
                     if (paymentCallback != null) {
                         paymentCallback.onPaymentStatus("ERROR", null, null, null,
-                                null, null, null, null, null, null);
+                                null, null, null, null, null, null,null, null);
                     }
                 }
             }
